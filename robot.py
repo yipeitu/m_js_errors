@@ -12,14 +12,19 @@ from datetime import datetime
 import os
 
 SLACK_DICT = {
-	'token': 'xoxp-89329937920-382773936513-573115403168-b783213a6abb099253b9de755161c009',
-	'channel': 'my_robot',
+	'token': 'xoxp-89329937920-382773936513-577370058179-2ea5eaf22ea814bc3adc6a2aa5738a2f',
+	'channel': 'GGZHKTGMB',
 	'text': '',
 	'username': 'bot'
 }
 SLACK_URL = 'https://slack.com/api/chat.postMessage'
 SLACK_NOTIFY = True
 ERROR_COUNT = 0
+URL_LIST = ['wiktionary',
+'google', 
+'youtube', 
+'wikipedia', 
+'baike.baidu.com']
 
 def send_msg_slack(message):
 	try:
@@ -39,24 +44,31 @@ def get_search_url(query, page_num=0, per_page=10, lang='zh-TW'):
 	return url
 
 
-def get_right_href(a_list):
+def get_right_href(driver, search_string, page_num):
+	global URL_LIST
 	try:
+		driver.get(get_search_url(search_string, page_num))
+		WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, 'search')))
+		a_list=driver.find_elements_by_xpath("//div[@id='search']//a")
 		for element in a_list:
 			href = element.get_attribute("href")
-			if 'https://www.youtube.com/' in href:
-				continue
-			elif 'https://zh.wikipedia.org' in href:
-				continue
-			return href
+			b_rtn = True
+			for url in URL_LIST:
+				if href.find(url) != -1:
+					b_rtn = False
+			if b_rtn:
+				URL_LIST += [href.split("/")[2]]
+				return href
 	except Exception as e:
 		send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
 	return ''
 
 def write_to_csv(search_string, url, error_msg):
+	global ERROR_COUNT
 	try:
 		with open("result.csv", "a") as f:
 			cw = csv.writer(f, delimiter=",")
-			cw.write_row([search_string, url, error_msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+			cw.writerow([search_string, url, error_msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
 			ERROR_COUNT += 1
 	except Exception as e:
 		send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
@@ -71,40 +83,46 @@ try:
 	search_list = json.load(fss)
 	done_list = []
 	if os.path.isfile("search_done.json"):
-		done_list = json.load(open("search_done.json", "r"))
+		dict_done = json.load(open("search_done.json", "r"))
+		done_list = dict_done.get("string", [])
+		URL_LIST = dict_done.get("href", URL_LIST)
 		search_list = list(set(search_list)-set(done_list))
 	with open("search_done.csv", "a") as fw:
 		cw = csv.writer(fw, delimiter=",")
-		cw.write_row(["Start", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+		cw.writerow(["Start", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+		send_msg_slack("Start:"+datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 		for search_string in search_list:
-			if len(ERROR_COUNT) > 100:
+			if ERROR_COUNT > 100:
 				break
 			# wait 10 seconds
-			wait = WebDriverWait(driver, 10)
-			element = wait.until(EC.presence_of_element_located((By.ID, 'search')))
-			driver.get(get_search_url(search_string))
-			a_list=driver.find_elements_by_xpath("//div[@id='search']//a")
-			href = get_right_href(a_list)
+			href = ""
+			page_num = 0
+			while len(href) == 0:
+				href = get_right_href(driver, search_string, page_num)
+				page_num += 1
+				if page_num > 10:
+					break
 			if len(href) == 0:
 				send_msg_slack("len(href) == 0: "+search_string)
-				continue
-			try:
-				driver.implicitly_wait(10)
-				driver.get(href)
-				for entry in driver.get_log('browser'):
-					if entry.get("level") == 'SEVERE':
-						write_to_csv(search_string, href, entry.get('message'))
-						break
-			except Exception as e:
-				send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
+			else:
+				try:
+					driver.implicitly_wait(10)
+					driver.get(href)
+					for entry in driver.get_log('browser'):
+						if entry.get("level") == 'SEVERE':
+							write_to_csv(search_string, href, entry.get('message'))
+							break
+				except Exception as e:
+					send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
+			done_list += [search_string]
 			with open("search_done.json", "w") as fsd:
-				json.dump(done_list, fsd)
-			cw.write_row([ERROR_COUNT+"/"+len(done_list),datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-			send_msg_slack(ERROR_COUNT+"/"+len(done_list)+" : "+datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+				json.dump({"string": done_list, "href": URL_LIST}, fsd)
+			cw.writerow([str(ERROR_COUNT)+"/"+str(len(done_list)),datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+			send_msg_slack(str(ERROR_COUNT)+"/"+str(len(done_list))+" : "+datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 except Exception as e:
 	send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
 finally:
 	driver.quit()
 with open("search_done.csv", "a") as fw:
 	cw = csv.writer(fw, delimiter=",")
-	cw.write_row(["End", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+	cw.writerow(["End", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
