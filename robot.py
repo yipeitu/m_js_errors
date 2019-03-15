@@ -1,6 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import quote_plus
@@ -10,10 +11,12 @@ import csv
 import json
 from datetime import datetime
 import os
+import time
+import random
 
 SLACK_DICT = {
-	'token': 'xoxp-89329937920-382773936513-577370058179-2ea5eaf22ea814bc3adc6a2aa5738a2f',
-	'channel': 'GGZHKTGMB',
+	'token': '',
+	'channel': '',
 	'text': '',
 	'username': 'bot'
 }
@@ -24,7 +27,8 @@ URL_LIST = ['wiktionary',
 'google', 
 'youtube', 
 'wikipedia', 
-'baike.baidu.com']
+'baike.baidu.com',
+'facebook.com']
 
 def send_msg_slack(message):
 	try:
@@ -40,18 +44,31 @@ def send_msg_slack(message):
 
 def get_search_url(query, page_num=0, per_page=10, lang='zh-TW'):
 	query = quote_plus(query)
-	url = 'https://www.google.hr/search?q={}&num={}&start={}&nl={}'.format(query, per_page, page_num*per_page, lang)
+	# url = 'https://www.google.hr/search?q={}&num={}&start={}&nl={}'.format(query, per_page, page_num*per_page, lang)
+	url = 'https://www.bing.com/search?q={}&first={}'.format(query,page_num*per_page+1)
 	return url
 
 
 def get_right_href(driver, search_string, page_num):
 	global URL_LIST
 	try:
-		driver.get(get_search_url(search_string, page_num))
-		WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, 'search')))
-		a_list=driver.find_elements_by_xpath("//div[@id='search']//a")
+		TIME_OUT = 300
+		while TIME_OUT < 600:
+			try:
+				driver.get(get_search_url(search_string, page_num))
+				driver.execute_script("window.alert = function() {};")
+				WebDriverWait(driver, TIME_OUT).until(EC.presence_of_element_located((By.ID, 'b_results')))
+				break
+			except TimeoutException:
+				send_msg_slack('Bing TimeoutException:'+str(TIME_OUT)+" "+search_string+" "+str(page_num)+" "+get_search_url(search_string, page_num))
+				TIME_OUT += 60
+		if TIME_OUT > 600:
+			return ''
+		a_list=driver.find_elements_by_xpath("//li[@class='b_algo']//h2/a")
 		for element in a_list:
-			href = element.get_attribute("href")
+			href = element.get_attribute('href')
+			if href.find("http://") == -1 and href.find("https://") == -1:
+				continue
 			b_rtn = True
 			for url in URL_LIST:
 				if href.find(url) != -1:
@@ -61,6 +78,9 @@ def get_right_href(driver, search_string, page_num):
 				return href
 	except Exception as e:
 		send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
+	SLEEP_TIME = random.randint(2,60)
+	print("SLEEP TIME [href is empty]:"+str(SLEEP_TIME))
+	time.sleep(SLEEP_TIME)
 	return ''
 
 def write_to_csv(search_string, url, error_msg):
@@ -86,6 +106,7 @@ try:
 		dict_done = json.load(open("search_done.json", "r"))
 		done_list = dict_done.get("string", [])
 		URL_LIST = dict_done.get("href", URL_LIST)
+		ERROR_COUNT = dict_done.get("error", ERROR_COUNT)
 		search_list = list(set(search_list)-set(done_list))
 	with open("search_done.csv", "a") as fw:
 		cw = csv.writer(fw, delimiter=",")
@@ -94,6 +115,8 @@ try:
 		for search_string in search_list:
 			if ERROR_COUNT > 100:
 				break
+			if len(search_string) == 1:
+				search_string = search_string + " " + done_list[random.randint(0, len(done_list)-1)]
 			# wait 10 seconds
 			href = ""
 			page_num = 0
@@ -106,8 +129,10 @@ try:
 				send_msg_slack("len(href) == 0: "+search_string)
 			else:
 				try:
-					driver.implicitly_wait(10)
+					driver.implicitly_wait(30)
 					driver.get(href)
+					driver.execute_script("window.alert = function() {};")
+					driver.execute_script("window.stop();")
 					for entry in driver.get_log('browser'):
 						if entry.get("level") == 'SEVERE':
 							write_to_csv(search_string, href, entry.get('message'))
@@ -116,9 +141,12 @@ try:
 					send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
 			done_list += [search_string]
 			with open("search_done.json", "w") as fsd:
-				json.dump({"string": done_list, "href": URL_LIST}, fsd)
+				json.dump({"string": done_list, "href": URL_LIST, "error": ERROR_COUNT}, fsd)
 			cw.writerow([str(ERROR_COUNT)+"/"+str(len(done_list)),datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
 			send_msg_slack(str(ERROR_COUNT)+"/"+str(len(done_list))+" : "+datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+			SLEEP_TIME = random.randint(2,30)
+			send_msg_slack("SLEEP TIME:"+str(SLEEP_TIME))
+			time.sleep(SLEEP_TIME)
 except Exception as e:
 	send_msg_slack(str(e)+"\n"+str(traceback.format_exc()))
 finally:
